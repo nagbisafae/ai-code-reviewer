@@ -41,6 +41,11 @@ public class GitHubAppAuthService {
     @Value("${github.app.private-key-path}")
     private String privateKeyPath;
 
+    private final RestTemplate restTemplate;
+
+    public GitHubAppAuthService() {
+        this.restTemplate = createRestTemplateWithSSL();
+    }
     /**
      * Create RestTemplate with relaxed SSL for Cloud Run
      */
