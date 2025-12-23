@@ -106,7 +106,22 @@ public class GitHubAppAuthService {
      */
     private PrivateKey loadPrivateKey() throws Exception {
         try {
-            String pemContent = Files.readString(Paths.get(privateKeyPath));
+            String pemContent;
+            String source; // Track where we loaded from
+
+            // Check if running in cloud (environment variable set)
+            String envPrivateKey = System.getenv("GITHUB_APP_PRIVATE_KEY");
+            if (envPrivateKey != null && !envPrivateKey.isEmpty()) {
+                log.info("✅ Loading private key from environment variable");
+                pemContent = envPrivateKey;
+                source = "environment variable";
+            }
+            // Local development (file path)
+            else {
+                log.info("✅ Loading private key from file: {}", privateKeyPath);
+                pemContent = Files.readString(Paths.get(privateKeyPath));
+                source = "file: " + privateKeyPath;
+            }
 
             PEMParser pemParser = new PEMParser(new StringReader(pemContent));
             Object object = pemParser.readObject();

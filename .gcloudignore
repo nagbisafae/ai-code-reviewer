@@ -1,0 +1,12 @@
+.idea/
+   .vscode/
+   *.iml
+   build/
+   .gradle/
+   .git/
+   *.pem
+   .env
+   .DS_Store
+   Thumbs.db
+   src/test/
+   Dockerfile.old
