@@ -31,6 +31,14 @@ dependencies {
 	// JavaParser for code analysis
 	implementation("com.github.javaparser:javaparser-symbol-solver-core:3.25.8")
 
+	// GitHub App authentication
+	implementation ("io.jsonwebtoken:jjwt-api:0.12.3")
+	runtimeOnly ("io.jsonwebtoken:jjwt-impl:0.12.3")
+	runtimeOnly ("io.jsonwebtoken:jjwt-jackson:0.12.3")
+
+	// For reading PEM files
+	implementation ("org.bouncycastle:bcpkix-jdk18on:1.78")
+
 	compileOnly("org.projectlombok:lombok")
 	annotationProcessor("org.projectlombok:lombok")
 

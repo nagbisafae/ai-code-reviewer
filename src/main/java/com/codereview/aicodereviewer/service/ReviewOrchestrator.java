@@ -23,6 +23,7 @@ public class ReviewOrchestrator {
     private final CodeAnalysisService codeAnalysisService;
     private final AIReviewService aiReviewService;
     private final GitHubCommentService commentService;
+    private final GitHubAppAuthService gitHubAppAuthService;
 
     /**
      * Process a pull request: fetch files, review them, post comments
@@ -100,9 +101,30 @@ public class ReviewOrchestrator {
 
     /**
      * Process a pull request with inline comments on changed lines only
+     * NOW SUPPORTS GITHUB APP AUTHENTICATION
+     *
+     * @param owner Repository owner
+     * @param repo Repository name
+     * @param prNumber Pull request number
+     * @param headSha Commit SHA
+     * @param installationId GitHub App installation ID (null for PAT mode)
      */
-    public void processPullRequest(String owner, String repo, int prNumber, String headSha) {
+    public void processPullRequest(String owner, String repo, int prNumber, String headSha, Long installationId) {
         log.info("🚀 Starting review for PR #{} in {}/{}", prNumber, owner, repo);
+
+        String installationToken = null;
+        if (installationId != null) {
+            try {
+                installationToken = gitHubAppAuthService.getInstallationToken(installationId);
+                gitHubService.setInstallationToken(installationToken);
+                commentService.setInstallationToken(installationToken);
+                log.info("🔐 Using GitHub App authentication (Installation ID: {})", installationId);
+            } catch (Exception e) {
+                log.error("Failed to get installation token, falling back to PAT: {}", e.getMessage());
+            }
+        } else {
+            log.info("🔐 Using Personal Access Token authentication");
+        }
 
         try {
             // Step 1: Fetch changed files
@@ -122,7 +144,7 @@ public class ReviewOrchestrator {
             int totalIssues = 0;
             int totalNewIssues = 0;
             StringBuilder summaryBuilder = new StringBuilder();
-            summaryBuilder.append("## 🤖 AI Code Review Summary\n\n");
+            summaryBuilder.append("## Code Review Summary\n\n");
 
             // Step 2: Review each Java file
             for (Map<String, Object> file : javaFiles) {
@@ -161,43 +183,42 @@ public class ReviewOrchestrator {
                 totalIssues += allIssues.size();
                 totalNewIssues += newIssues.size();
 
-                // Add to summary
-                summaryBuilder.append(String.format("### 📄 %s\n\n", filename));
-                summaryBuilder.append(String.format("- **Lines reviewed**: %d\n", changedLines.size()));
-                summaryBuilder.append(String.format("- **Issues found**: %d total (%d in changed code)\n\n",
+                // Add to summary - CLEAN VERSION
+                summaryBuilder.append(String.format("### %s\n\n", filename));
+                summaryBuilder.append(String.format("- Lines reviewed: %d\n", changedLines.size()));
+                summaryBuilder.append(String.format("- Issues found: %d total (%d in changed code)\n\n",
                         allIssues.size(), newIssues.size()));
 
                 if (newIssues.isEmpty()) {
-                    summaryBuilder.append("✅ No issues found in changed code!\n\n");
+                    summaryBuilder.append("No issues found in changed code.\n\n");
                 } else {
-                    summaryBuilder.append("🔍 See inline comments on the changed lines above.\n\n");
+                    summaryBuilder.append(String.format("⚠️ **Action required:** Please review the **%d** inline comments above.\n\n", totalNewIssues));
                 }
 
                 // Mention old issues if any
                 int oldIssues = allIssues.size() - newIssues.size();
                 if (oldIssues > 0) {
-                    summaryBuilder.append(String.format("ℹ️ %d pre-existing issues in unchanged code.\n\n", oldIssues));
+                    summaryBuilder.append(String.format("*%d pre-existing issues in unchanged code*\n\n", oldIssues));
                 }
 
                 summaryBuilder.append("---\n\n");
             }
 
-            // Step 3: Post summary comment
-            summaryBuilder.append("## 📊 Overall Summary\n\n");
-            summaryBuilder.append(String.format("- **Files reviewed**: %d\n", javaFiles.size()));
-            summaryBuilder.append(String.format("- **Total issues**: %d\n", totalIssues));
-            summaryBuilder.append(String.format("- **New issues**: %d 🔴\n", totalNewIssues));
-            summaryBuilder.append(String.format("- **Pre-existing**: %d ⚠️\n\n", totalIssues - totalNewIssues));
+            // Step 3: Post summary comment - CLEAN VERSION
+            summaryBuilder.append("### Overall\n\n");
+            summaryBuilder.append(String.format("- Files reviewed: %d\n", javaFiles.size()));
+            summaryBuilder.append(String.format("- Total issues: %d\n", totalIssues));
+            summaryBuilder.append(String.format("- New issues: %d\n", totalNewIssues));
+            summaryBuilder.append(String.format("- Pre-existing: %d\n\n", totalIssues - totalNewIssues));
 
             if (totalNewIssues == 0) {
-                summaryBuilder.append("### ✅ Great work! No new issues found.\n\n");
+                summaryBuilder.append("**All clear!** No new issues found.\n\n");
             } else {
-                summaryBuilder.append("### 🎯 Action Required\n\n");
-                summaryBuilder.append(String.format("Please review and address the %d inline comments above.\n\n", totalNewIssues));
+                summaryBuilder.append(String.format("**Action required:** Please review the %d inline comments above.\n\n", totalNewIssues));
             }
 
             summaryBuilder.append("---\n");
-            summaryBuilder.append("*🤖 Generated by AI Code Review Bot*");
+            summaryBuilder.append("*Automated code review*");
 
             boolean posted = commentService.postReviewComment(owner, repo, prNumber, summaryBuilder.toString());
 
@@ -217,6 +238,12 @@ public class ReviewOrchestrator {
             } catch (Exception ex) {
                 log.error("Could not post error comment", ex);
             }
+        } finally {
+            // IMPORTANT: Clean up tokens
+            if (installationToken != null) {
+                gitHubService.clearInstallationToken();
+                commentService.clearInstallationToken();
+            }
         }
     }
 
@@ -225,7 +252,7 @@ public class ReviewOrchestrator {
      */
     public boolean canConnectToGitHub() {
         try {
-            // Simple test - try to get a public repo's info
+            // Pass null for installationId in health check
             gitHubService.getChangedFiles("octocat", "Hello-World", 1);
             return true;
         } catch (Exception e) {

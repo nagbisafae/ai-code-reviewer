@@ -43,6 +43,14 @@ public class WebhookController {
                 Map<String, Object> pullRequest = (Map<String, Object>) payload.get("pull_request");
                 Map<String, Object> repo = (Map<String, Object>) payload.get("repository");
 
+                // IMPORTANT: Extract installation ID for GitHub App
+                Map<String, Object> installation = (Map<String, Object>) payload.get("installation");
+                Long installationId = null;
+                if (installation != null) {
+                    installationId = ((Number) installation.get("id")).longValue();
+                    log.info("Installation ID: {}", installationId);
+                }
+
                 // Extract PR details
                 int prNumber = (int) pullRequest.get("number");
                 String fullName = (String) repo.get("full_name");
@@ -53,11 +61,12 @@ public class WebhookController {
                 Map<String, Object> head = (Map<String, Object>) pullRequest.get("head");
                 String headSha = (String) head.get("sha");
 
-                log.info("🚀 Triggering review for PR #{} in {}/{}", prNumber, owner, repoName);
+                log.info("Triggering review for PR #{} in {}/{}", prNumber, owner, repoName);
 
-                // Trigger async review (don't block webhook response)
+                // Trigger async review with installation ID
+                final Long finalInstallationId = installationId;
                 new Thread(() -> {
-                    reviewOrchestrator.processPullRequest(owner, repoName, prNumber, headSha);
+                    reviewOrchestrator.processPullRequest(owner, repoName, prNumber, headSha, finalInstallationId);
                 }).start();
 
                 return ResponseEntity.ok(Map.of(
