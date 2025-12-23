@@ -20,6 +20,9 @@ import java.security.PrivateKey;
 import java.util.Date;
 import java.util.Map;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
 /**
  * Service to authenticate as a GitHub App and generate installation tokens
  */
@@ -107,24 +110,39 @@ public class GitHubAppAuthService {
     private PrivateKey loadPrivateKey() throws Exception {
         try {
             String pemContent;
-            String source; // Track where we loaded from
+            String source;
 
-            // Check if running in cloud (environment variable set)
-            String envPrivateKey = System.getenv("GITHUB_APP_PRIVATE_KEY");
-            if (envPrivateKey != null && !envPrivateKey.isEmpty()) {
-                log.info("✅ Loading private key from environment variable");
-                pemContent = envPrivateKey;
-                source = "environment variable";
+            // Priority 1: Check base64 environment variable (Cloud Run)
+            String base64PrivateKey = System.getenv("GITHUB_APP_PRIVATE_KEY_BASE64");
+            if (base64PrivateKey != null && !base64PrivateKey.isEmpty()) {
+                log.info("✅ Loading private key from base64 environment variable");
+                byte[] decoded = Base64.getDecoder().decode(base64PrivateKey);
+                pemContent = new String(decoded, StandardCharsets.UTF_8);
+                source = "base64 environment variable";
             }
-            // Local development (file path)
+            // Priority 2: Check plain text environment variable (fallback)
             else {
-                log.info("✅ Loading private key from file: {}", privateKeyPath);
-                pemContent = Files.readString(Paths.get(privateKeyPath));
-                source = "file: " + privateKeyPath;
+                String envPrivateKey = System.getenv("GITHUB_APP_PRIVATE_KEY");
+                if (envPrivateKey != null && !envPrivateKey.isEmpty()) {
+                    log.info("✅ Loading private key from environment variable");
+                    pemContent = envPrivateKey;
+                    source = "environment variable";
+                }
+                // Priority 3: Local development (file path)
+                else {
+                    log.info("✅ Loading private key from file: {}", privateKeyPath);
+                    pemContent = Files.readString(Paths.get(privateKeyPath));
+                    source = "file: " + privateKeyPath;
+                }
             }
 
             PEMParser pemParser = new PEMParser(new StringReader(pemContent));
             Object object = pemParser.readObject();
+
+            if (object == null) {
+                throw new RuntimeException("PEM parser returned null - invalid key format");
+            }
+
             pemParser.close();
 
             JcaPEMKeyConverter converter = new JcaPEMKeyConverter();
@@ -151,11 +169,11 @@ public class GitHubAppAuthService {
                 throw new RuntimeException("Unsupported PEM format: " + object.getClass().getName());
             }
 
-            log.info("✅ Successfully loaded GitHub App private key from: {}", privateKeyPath);
+            log.info("✅ Successfully loaded GitHub App private key from: {}", source);
             return key;
 
         } catch (Exception e) {
-            log.error("Failed to load private key from {}: {}", privateKeyPath, e.getMessage());
+            log.error("Failed to load private key: {}", e.getMessage());
             throw new RuntimeException("Could not load GitHub App private key", e);
         }
     }
