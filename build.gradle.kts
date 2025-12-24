@@ -39,6 +39,8 @@ dependencies {
 	// For reading PEM files
 	implementation ("org.bouncycastle:bcpkix-jdk18on:1.78")
 
+	implementation("org.apache.httpcomponents.client5:httpclient5")
+
 	compileOnly("org.projectlombok:lombok")
 	annotationProcessor("org.projectlombok:lombok")
 

@@ -23,10 +23,18 @@ import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import javax.net.ssl.*;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactoryBuilder;
+import org.apache.hc.core5.http.ssl.TLS;
+import org.apache.hc.core5.ssl.SSLContexts;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.apache.hc.client5.http.ssl.DefaultHostnameVerifier;
+import java.text.SimpleDateFormat;
+import java.util.TimeZone;
 
 /**
  * Service to authenticate as a GitHub App and generate installation tokens
@@ -34,6 +42,12 @@ import java.security.cert.X509Certificate;
 @Service
 @Slf4j
 public class GitHubAppAuthService {
+
+    static {
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+        System.setProperty("user.timezone", "UTC");
+        log.info("🕐 FORCED TIMEZONE TO UTC");
+    }
 
     @Value("${github.app.id}")
     private String appId;
@@ -44,52 +58,32 @@ public class GitHubAppAuthService {
     private final RestTemplate restTemplate;
 
     public GitHubAppAuthService() {
-        this.restTemplate = createRestTemplateWithSSL();
-    }
-    /**
-     * Create RestTemplate with relaxed SSL for Cloud Run
-     */
-    private RestTemplate createRestTemplateWithSSL() {
         try {
-            // Create trust manager that trusts all certificates
-            TrustManager[] trustAllCerts = new TrustManager[]{
-                    new X509TrustManager() {
-                        public X509Certificate[] getAcceptedIssuers() {
-                            return new X509Certificate[0];
-                        }
-                        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-                    }
-            };
+            // 1. Create a socket factory with explicit TLS 1.2 and the modern Hostname Verifier
+            final SSLConnectionSocketFactory sslSocketFactory = SSLConnectionSocketFactoryBuilder.create()
+                    .setSslContext(SSLContexts.createDefault())
+                    .setTlsVersions(TLS.V_1_2)
+                    .setHostnameVerifier(new DefaultHostnameVerifier()) // Use 'new DefaultHostnameVerifier()'
+                    .build();
 
-            // Install the all-trusting trust manager
-            SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(null, trustAllCerts, new SecureRandom());
+            // 2. Build the client with the forced strategy
+            final CloseableHttpClient httpClient = HttpClients.custom()
+                    .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
+                            .setSSLSocketFactory(sslSocketFactory)
+                            .build())
+                    .disableAutomaticRetries() // Stop handshake retry loops
+                    .build();
 
-            // Create factory with custom SSL
-            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory() {
-                @Override
-                protected void prepareConnection(java.net.HttpURLConnection connection, String httpMethod) throws java.io.IOException {
-                    super.prepareConnection(connection, httpMethod);
-                    if (connection instanceof HttpsURLConnection) {
-                        HttpsURLConnection httpsConnection = (HttpsURLConnection) connection;
-                        httpsConnection.setSSLSocketFactory(sslContext.getSocketFactory());
-                        httpsConnection.setHostnameVerifier((hostname, session) -> true);
-                    }
-                }
-            };
-
-            factory.setConnectTimeout(10000);
-            factory.setReadTimeout(10000);
-
-            log.info("✅ Created RestTemplate with relaxed SSL");
-            return new RestTemplate(factory);
+            // 3. Connect it to Spring
+            this.restTemplate = new RestTemplate(new HttpComponentsClientHttpRequestFactory(httpClient));
+            log.info("✅ RestTemplate engine swapped to Apache HttpClient 5 (TLS 1.2 + SNI Fixed)");
 
         } catch (Exception e) {
-            log.error("❌ Failed to create SSL RestTemplate: {}", e.getMessage());
-            return new RestTemplate();
+            log.error("❌ Failed to initialize secure RestTemplate: {}", e.getMessage());
+            throw new RuntimeException(e);
         }
     }
+
     private PrivateKey privateKey;
 
     /**
@@ -104,15 +98,34 @@ public class GitHubAppAuthService {
             Date now = new Date();
             Date expiration = new Date(now.getTime() + 600000); // 10 minutes
 
-            return Jwts.builder()
+            // ===== EXTENSIVE DEBUG LOGGING =====
+            log.info("==================== JWT DEBUG START ====================");
+            log.info("🔑 App ID from config: {}", appId);
+            log.info("🔑 Private Key Algorithm: {}", privateKey.getAlgorithm());
+            log.info("🔑 Private Key Format: {}", privateKey.getFormat());
+            log.info("🔑 Private Key Class: {}", privateKey.getClass().getName());
+            log.info("⏰ Server Time (now): {}", now);
+            log.info("⏰ Server Timezone: {}", TimeZone.getDefault().getID());
+            log.info("⏰ JWT Expiration: {}", expiration);
+            log.info("⏰ Time diff (ms): {}", (expiration.getTime() - now.getTime()));
+
+            String jwt = Jwts.builder()
                     .setIssuedAt(now)
                     .setExpiration(expiration)
                     .setIssuer(appId)
                     .signWith(privateKey, SignatureAlgorithm.RS256)
                     .compact();
 
+            log.info("✅ JWT Generated Successfully");
+            log.info("📝 JWT Length: {}", jwt.length());
+            log.info("📝 JWT First 50 chars: {}", jwt.substring(0, Math.min(50, jwt.length())));
+            log.info("📝 JWT Last 50 chars: {}", jwt.substring(Math.max(0, jwt.length() - 50)));
+            log.info("==================== JWT DEBUG END ====================");
+
+            return jwt;
+
         } catch (Exception e) {
-            log.error("Error generating JWT: {}", e.getMessage(), e);
+            log.error("❌❌❌ Error generating JWT: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to generate JWT", e);
         }
     }
@@ -129,12 +142,20 @@ public class GitHubAppAuthService {
                     installationId
             );
 
+            log.info("==================== API REQUEST DEBUG START ====================");
+            log.info("🌐 Target URL: {}", url);
+            log.info("🌐 Installation ID: {}", installationId);
+
             HttpHeaders headers = new HttpHeaders();
             headers.set("Accept", "application/vnd.github+json");
             headers.set("Authorization", "Bearer " + jwt);
             headers.set("X-GitHub-Api-Version", "2022-11-28");
 
+            log.info("📤 Request Headers: {}", headers);
+
             HttpEntity<String> entity = new HttpEntity<>(headers);
+
+            log.info("🚀 Sending request to GitHub...");
 
             ResponseEntity<Map> response = restTemplate.exchange(
                     url,
@@ -142,6 +163,9 @@ public class GitHubAppAuthService {
                     entity,
                     Map.class
             );
+
+            log.info("✅ Response Status: {}", response.getStatusCode());
+            log.info("==================== API REQUEST DEBUG END ====================");
 
             if (response.getBody() != null) {
                 String token = (String) response.getBody().get("token");
@@ -152,7 +176,14 @@ public class GitHubAppAuthService {
             throw new RuntimeException("Failed to get installation token");
 
         } catch (Exception e) {
-            log.error("Error getting installation token: {}", e.getMessage(), e);
+            log.error("❌❌❌ Installation Token Request Failed");
+            log.error("Error Type: {}", e.getClass().getName());
+            log.error("Error Message: {}", e.getMessage());
+            if (e.getCause() != null) {
+                log.error("Caused By: {}", e.getCause().getClass().getName());
+                log.error("Cause Message: {}", e.getCause().getMessage());
+            }
+            log.error("Full Stack Trace:", e);
             throw new RuntimeException("Failed to get installation token", e);
         }
     }
@@ -162,6 +193,8 @@ public class GitHubAppAuthService {
      */
     private PrivateKey loadPrivateKey() throws Exception {
         try {
+            log.info("==================== PRIVATE KEY LOAD DEBUG START ====================");
+
             String pemContent;
             String source;
 
@@ -169,9 +202,18 @@ public class GitHubAppAuthService {
             String base64PrivateKey = System.getenv("GITHUB_APP_PRIVATE_KEY_BASE64");
             if (base64PrivateKey != null && !base64PrivateKey.isEmpty()) {
                 log.info("✅ Loading private key from base64 environment variable");
+                log.info("✅ Found GITHUB_APP_PRIVATE_KEY_BASE64 env var");
+                log.info("📏 Base64 Length: {}", base64PrivateKey.length());
+                log.info("📝 Base64 First 50 chars: {}", base64PrivateKey.substring(0, Math.min(50, base64PrivateKey.length())));
+                log.info("📝 Base64 Last 50 chars: {}", base64PrivateKey.substring(Math.max(0, base64PrivateKey.length() - 50)));
+
                 byte[] decoded = Base64.getDecoder().decode(base64PrivateKey);
                 pemContent = new String(decoded, StandardCharsets.UTF_8);
                 source = "base64 environment variable";
+
+                log.info("✅ Base64 decoded successfully");
+                log.info("📏 Decoded PEM Length: {}", pemContent.length());
+                log.info("📝 PEM starts with: {}", pemContent.substring(0, Math.min(50, pemContent.length())));
             }
             // Priority 2: Check plain text environment variable (fallback)
             else {
@@ -189,12 +231,21 @@ public class GitHubAppAuthService {
                 }
             }
 
+            log.info("📄 PEM Content loaded from: {}", source);
+            log.info("📄 PEM Content contains 'BEGIN': {}", pemContent.contains("BEGIN"));
+            log.info("📄 PEM Content contains 'END': {}", pemContent.contains("END"));
+            log.info("📄 PEM Content contains 'RSA': {}", pemContent.contains("RSA"));
+
             PEMParser pemParser = new PEMParser(new StringReader(pemContent));
             Object object = pemParser.readObject();
 
             if (object == null) {
+                log.error("❌ PEM parser returned NULL");
                 throw new RuntimeException("PEM parser returned null - invalid key format");
             }
+
+            log.info("✅ PEM parsed successfully");
+            log.info("📦 Parsed object type: {}", object.getClass().getName());
 
             pemParser.close();
 
