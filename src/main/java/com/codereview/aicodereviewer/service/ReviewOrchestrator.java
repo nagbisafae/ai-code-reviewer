@@ -179,6 +179,12 @@ public class ReviewOrchestrator {
                     log.info("Posted {} inline comments for {}", posted, filename);
                 }
 
+                try {
+                    Thread.sleep(2000); // Wait 2 seconds before summary
+                } catch (InterruptedException e) {
+                    // Ignore interruption
+                }
+
                 // Update counters
                 totalIssues += allIssues.size();
                 totalNewIssues += newIssues.size();
