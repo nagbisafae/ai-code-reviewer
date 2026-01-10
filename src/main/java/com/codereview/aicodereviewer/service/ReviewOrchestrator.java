@@ -163,7 +163,7 @@ public class ReviewOrchestrator {
                 log.info("Found {} changed lines in {}", changedLines.size(), filename);
 
                 // Get AI review with line numbers
-                List<CodeIssue> allIssues = aiReviewService.reviewCodeWithLineNumbers(content, filename);
+                List<CodeIssue> allIssues = aiReviewService.reviewCodeWithMLAndAI(content, filename);
                 log.info("AI found {} total issues in {}", allIssues.size(), filename);
 
                 // Filter to only issues on changed lines

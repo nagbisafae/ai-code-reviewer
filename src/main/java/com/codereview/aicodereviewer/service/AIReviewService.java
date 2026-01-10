@@ -21,9 +21,11 @@ import java.util.*;
 public class AIReviewService {
 
     private final ChatModel chatModel;
+    private final VulnerabilityDetectionService mlDetectionService;
 
-    public AIReviewService(ChatModel chatModel) {
+    public AIReviewService(ChatModel chatModel, VulnerabilityDetectionService mlDetectionService) {
         this.chatModel = chatModel;
+        this.mlDetectionService = mlDetectionService;
     }
 
     /**
@@ -323,5 +325,65 @@ public class AIReviewService {
         }
 
         return cleaned.trim();
+    }
+
+    /**
+     * HYBRID APPROACH: Review code using BOTH ML model and Gemini AI
+     *
+     * 1. ML Model (GraphCodeBERT) - Fast, accurate vulnerability detection (83.93%)
+     * 2. Gemini AI - Detailed code quality review and explanations
+     *
+     * This combines the strengths of both approaches for comprehensive review.
+     *
+     * @param code Java source code
+     * @param fileName Name of the file being reviewed
+     * @return Combined list of issues from both ML and AI
+     */
+    public List<CodeIssue> reviewCodeWithMLAndAI(String code, String fileName) {
+        List<CodeIssue> allIssues = new ArrayList<>();
+
+        log.info("Starting HYBRID review for: {}", fileName);
+        log.info("============================================================");
+
+        // STEP 1: ML Model Analysis (Fast & Accurate for Vulnerabilities)
+        try {
+            log.info("Step 1/2: ML Model Analysis...");
+            List<CodeIssue> mlIssues = mlDetectionService.analyzeCode(code, fileName);
+
+            if (!mlIssues.isEmpty()) {
+                allIssues.addAll(mlIssues);
+                log.info("ML Model found {} potential vulnerabilities", mlIssues.size());
+            } else {
+                log.info("ML Model: No high-confidence vulnerabilities detected");
+            }
+        } catch (Exception e) {
+            log.warn("ML model analysis failed (degrading gracefully): {}", e.getMessage());
+            // Continue with Gemini even if ML fails
+        }
+
+        // STEP 2: Gemini AI Analysis (Detailed Review)
+        try {
+            log.info("Step 2/2: Gemini AI Analysis...");
+            List<CodeIssue> aiIssues = reviewCodeWithLineNumbers(code, fileName);
+
+            if (!aiIssues.isEmpty()) {
+                allIssues.addAll(aiIssues);
+                log.info("Gemini AI found {} issues", aiIssues.size());
+            } else {
+                log.info("Gemini AI: No issues found");
+            }
+        } catch (Exception e) {
+            log.error("Gemini AI analysis failed: {}", e.getMessage());
+            // If we have ML results, we can still provide feedback
+            if (allIssues.isEmpty()) {
+                // Both failed - return empty list
+                log.error("Both ML and AI analysis failed");
+            }
+        }
+
+        log.info("============================================================");
+        log.info("HYBRID REVIEW COMPLETE: {} total issues found", allIssues.size());
+
+        return allIssues;
     }
 }

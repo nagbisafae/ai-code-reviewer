@@ -46,3 +46,13 @@ application-local.properties
 # Logs
 *.log
 logs/
+
+# Python
+python/__pycache__/
+python/*.pyc
+python/.pytest_cache/
+python/venv/
+python/.env
+
+python/model/java-vulnerability-detector-final/*.safetensors
+python/model/java-vulnerability-detector-final/*.bin
